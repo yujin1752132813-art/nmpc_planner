@@ -9,7 +9,7 @@ import numpy as np
 from config.defaults import CostConfig, SolverConfig, VehicleConfig
 from .acados_ocp import NX, NU, build_acados_ocp
 from .types import EgoState, PlannerInput, PlannerOutput, SolveStatus, TrajectoryPoint
-from .utils import wrap_angle
+from .utils import unwrap_to_near
 
 try:
     from acados_template import AcadosOcpSolver
@@ -82,7 +82,9 @@ class SolverWrapper:
             except Exception:
                 pass
 
-        if status_code != 0:
+        # Accept solution only if status is OK and residuals are not obviously exploded
+        residual_norm = float(sum(abs(float(v)) for v in solver_residuals)) if solver_residuals else 0.0
+        if status_code != 0 or residual_norm > 1e3 or solver_cost > 1e6:
             return PlannerOutput(
                 status=SolveStatus.SOLVER_FAILED,
                 solve_time_ms=solve_time_ms,
@@ -111,13 +113,20 @@ class SolverWrapper:
         for k in range(1, self.N + 1):
             ref = planner_input.local_ref[k]
             self.x_guess[k, :] = np.array([ref.x, ref.y, ref.yaw, ref.v_ref, 0.0, 0.0, ref.s], dtype=float)
+        self._make_yaw_guess_continuous()
         self.u_guess.fill(0.0)
 
     def _set_initial_state(self, ego: EgoState) -> None:
         x0 = np.array([ego.x, ego.y, ego.yaw, ego.v, ego.delta, ego.a, ego.theta], dtype=float)
+
+        # === FIX 2: align x0 yaw to the current warm-start trajectory ===
+        # This prevents a fake 2*pi jump between stage 0 and stage 1.
+        x0[2] = unwrap_to_near(x0[2], self.x_guess[1, 2] if self.N >= 1 else x0[2])
+
         self.solver.constraints_set(0, "lbx", x0)
         self.solver.constraints_set(0, "ubx", x0)
         self.x_guess[0, :] = x0
+        self._make_yaw_guess_continuous()
 
     def _set_stage_params(self, refs) -> None:
         for k in range(self.N + 1):
@@ -126,6 +135,7 @@ class SolverWrapper:
             self.solver.set(k, "p", pk)
 
     def _apply_warm_start(self) -> None:
+        self._make_yaw_guess_continuous()
         for k in range(self.N + 1):
             self.solver.set(k, "x", self.x_guess[k])
         for k in range(self.N):
@@ -135,6 +145,11 @@ class SolverWrapper:
         traj: List[TrajectoryPoint] = []
         xs = [np.array(self.solver.get(k, "x"), dtype=float).reshape(-1) for k in range(self.N + 1)]
         us = [np.array(self.solver.get(k, "u"), dtype=float).reshape(-1) for k in range(self.N)]
+
+        # keep the internal sequence continuous before packaging
+        for k in range(1, len(xs)):
+            xs[k][2] = unwrap_to_near(xs[k][2], xs[k - 1][2])
+
         for k in range(self.N + 1):
             xk = xs[k]
             uk = us[k] if k < self.N else us[-1]
@@ -158,12 +173,25 @@ class SolverWrapper:
     def _shift_warm_start_from_solution(self) -> None:
         xs = [np.array(self.solver.get(k, "x"), dtype=float).reshape(-1) for k in range(self.N + 1)]
         us = [np.array(self.solver.get(k, "u"), dtype=float).reshape(-1) for k in range(self.N)]
+
+        # === FIX 3: unwrap solver yaw sequence before shifting ===
+        for k in range(1, len(xs)):
+            xs[k][2] = unwrap_to_near(xs[k][2], xs[k - 1][2])
+
         for k in range(self.N):
             self.x_guess[k, :] = xs[k + 1]
         self.x_guess[self.N, :] = xs[self.N]
+
         for k in range(self.N - 1):
             self.u_guess[k, :] = us[k + 1]
         self.u_guess[self.N - 1, :] = us[self.N - 1]
+
+        self._make_yaw_guess_continuous()
+
+    def _make_yaw_guess_continuous(self) -> None:
+        """Sequentially unwrap yaw in the warm-start state trajectory."""
+        for k in range(1, self.N + 1):
+            self.x_guess[k, 2] = unwrap_to_near(self.x_guess[k, 2], self.x_guess[k - 1, 2])
 
     def _integrate_step_numeric(self, x: np.ndarray, u: np.ndarray) -> np.ndarray:
         dt = self.dt
@@ -190,7 +218,10 @@ class SolverWrapper:
         k3 = f(x + 0.5 * dt * k2, u)
         k4 = f(x + dt * k3, u)
         xn = x + (dt / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
-        xn[2] = wrap_angle(xn[2])
+
+        # IMPORTANT:
+        # Do NOT wrap yaw here. Internal planner yaw must remain continuous,
+        # otherwise the next frame's x0 may jump by 2*pi relative to warm start.
         xn[3] = float(np.clip(xn[3], self.vehicle_cfg.v_min, self.vehicle_cfg.v_max))
         xn[4] = float(np.clip(xn[4], -self.vehicle_cfg.delta_max, self.vehicle_cfg.delta_max))
         xn[5] = float(np.clip(xn[5], self.vehicle_cfg.a_min, self.vehicle_cfg.a_max))

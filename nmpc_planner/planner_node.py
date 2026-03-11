@@ -12,6 +12,7 @@ from .scenario_builder import ScenarioBuilder
 from .solver_wrapper import SolverWrapper
 from .trajectory_validator import TrajectoryValidator
 from .types import EgoState, PlannerInput, RunLog, SolveStatus
+from .utils import unwrap_to_near
 
 
 class PlannerNode:
@@ -77,8 +78,13 @@ class PlannerNode:
                 sim_time = frame_id * self.solver_cfg.dt
                 ego_before = ego
                 local_ref = self.ref_manager.build_local_reference(ego_before)
+
+                if local_ref:
+                    ego_before.yaw = unwrap_to_near(ego_before.yaw, local_ref[0].yaw)
+
                 corridor = self.corridor_builder.build(local_ref)
                 obstacles = self.obstacle_predictor.predict()
+
                 planner_input = PlannerInput(ego=ego_before, local_ref=local_ref)
                 output = self.solver.solve(planner_input)
 
