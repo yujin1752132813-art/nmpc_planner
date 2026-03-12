@@ -7,6 +7,7 @@ from typing import List
 import numpy as np
 
 from config.defaults import SimConfig
+from .path_smoother import smooth_reference_curvature
 from .types import RefPoint
 from .utils import unwrap_sequence, clamp
 
@@ -73,7 +74,8 @@ class ScenarioBuilder:
             v_vals.append(self._speed_profile(s, total_length))
 
         yaw_vals = unwrap_sequence(yaw_vals)
-        path = [
+
+        raw_path = [
             RefPoint(
                 s=float(s_grid[i]),
                 x=float(x_vals[i]),
@@ -85,27 +87,51 @@ class ScenarioBuilder:
             for i in range(len(s_grid))
         ]
 
+        if self.sim_cfg.enable_curvature_smoothing:
+            path = smooth_reference_curvature(
+                raw_path,
+                sigma_m=self.sim_cfg.curvature_smoothing_sigma_m,
+                passes=self.sim_cfg.curvature_smoothing_passes,
+            )
+        else:
+            path = raw_path
+
+        s_grid = np.array([p.s for p in path], dtype=float)
+        x_grid = np.array([p.x for p in path], dtype=float)
+        y_grid = np.array([p.y for p in path], dtype=float)
+        yaw_grid = np.array([p.yaw for p in path], dtype=float)
+        kappa_grid = np.array([p.kappa for p in path], dtype=float)
+        v_grid = np.array([p.v_ref for p in path], dtype=float)
+
         return Scenario(
             path=path,
             s_grid=s_grid,
-            x_grid=np.array(x_vals),
-            y_grid=np.array(y_vals),
-            yaw_grid=np.array(yaw_vals),
-            kappa_grid=np.array(kappa_vals),
-            v_grid=np.array(v_vals),
+            x_grid=x_grid,
+            y_grid=y_grid,
+            yaw_grid=yaw_grid,
+            kappa_grid=kappa_grid,
+            v_grid=v_grid,
             total_length=float(total_length),
-            goal_x=float(x_vals[-1]),
-            goal_y=float(y_vals[-1]),
-            goal_yaw=float(yaw_vals[-1]),
+            goal_x=float(x_grid[-1]),
+            goal_y=float(y_grid[-1]),
+            goal_yaw=float(yaw_grid[-1]),
         )
 
     def _speed_profile(self, s: float, total_length: float) -> float:
         cruise = 6.0
         accel_len = 20.0
         decel_len = 30.0
+
         if s < accel_len:
             return clamp(cruise * s / accel_len, 0.0, cruise)
-        if s > total_length - decel_len:
+
+        stop_start = total_length - decel_len
+        if s >= stop_start:
             rem = max(total_length - s, 0.0)
-            return clamp(cruise * rem / decel_len, 0.0, cruise)
+            a_ref = 0.6
+            v_stop = math.sqrt(max(2.0 * a_ref * rem, 0.0))
+            if rem < 0.5:
+                return 0.0
+            return clamp(v_stop, 0.0, cruise)
+
         return cruise

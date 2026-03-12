@@ -18,13 +18,13 @@ except ImportError as exc:  # pragma: no cover - environment dependent
 
 NX = 7
 NU = 3
-NP = 5
+NP = 6
 
-# stage residual dimension:
-# [ec, el, eyaw, v-ref_v, theta-ref_s, a, delta_rate, jerk, theta_rate-ref_v]
-NY = 9
+# stage residual:
+# [ec, el, eyaw, v-ref_v, theta-ref_s, a, delta-delta_ff, delta_rate, jerk, theta_rate-ref_v]
+NY = 10
 
-# terminal residual dimension:
+# terminal residual:
 # [px-ref_x, py-ref_y, eyaw, v-ref_v, theta-ref_s, a,
 #  stop_gate*(v-ref_v), stop_gate*(theta-ref_s)]
 NY_E = 8
@@ -47,45 +47,40 @@ def build_acados_ocp(
     export_dir.parent.mkdir(parents=True, exist_ok=True)
     ocp.code_gen_opts.code_export_directory = str(export_dir)
 
-    # =========================
-    # COST
-    # =========================
     ocp.cost.cost_type = "NONLINEAR_LS"
     ocp.cost.cost_type_e = "NONLINEAR_LS"
 
     ocp.cost.W = np.diag(
         [
-            cost_cfg.w_contour,      # ec
-            cost_cfg.w_lag,          # el
-            cost_cfg.w_yaw,          # eyaw
-            cost_cfg.w_v,            # v - ref_v
-            cost_cfg.w_theta,        # theta - ref_s
-            cost_cfg.w_a,            # a
-            cost_cfg.w_delta_rate,   # delta_rate
-            cost_cfg.w_jerk,         # jerk
-            cost_cfg.w_theta_rate,   # theta_rate - ref_v
+            cost_cfg.w_contour,
+            cost_cfg.w_lag,
+            cost_cfg.w_yaw,
+            cost_cfg.w_v,
+            cost_cfg.w_theta,
+            cost_cfg.w_a,
+            cost_cfg.w_delta_ff,
+            cost_cfg.w_delta_rate,
+            cost_cfg.w_jerk,
+            cost_cfg.w_theta_rate,
         ]
     )
 
     ocp.cost.W_e = np.diag(
         [
-            cost_cfg.w_terminal_xy,         # px - ref_x
-            cost_cfg.w_terminal_xy,         # py - ref_y
-            cost_cfg.w_terminal_yaw,        # eyaw
-            cost_cfg.w_terminal_v,          # v - ref_v
-            cost_cfg.w_terminal_theta,      # theta - ref_s
-            cost_cfg.w_terminal_a,          # a
-            cost_cfg.w_terminal_stop_v,     # stop_gate * (v - ref_v)
-            cost_cfg.w_terminal_stop_theta, # stop_gate * (theta - ref_s)
+            cost_cfg.w_terminal_xy,
+            cost_cfg.w_terminal_xy,
+            cost_cfg.w_terminal_yaw,
+            cost_cfg.w_terminal_v,
+            cost_cfg.w_terminal_theta,
+            cost_cfg.w_terminal_a,
+            cost_cfg.w_terminal_stop_v,
+            cost_cfg.w_terminal_stop_theta,
         ]
     )
 
     ocp.cost.yref = np.zeros((NY,))
     ocp.cost.yref_e = np.zeros((NY_E,))
 
-    # =========================
-    # INPUT BOUNDS
-    # =========================
     ocp.constraints.idxbu = np.array([0, 1, 2], dtype=int)
     ocp.constraints.lbu = np.array(
         [-vehicle_cfg.delta_rate_max, -vehicle_cfg.jerk_max, 0.0], dtype=float
@@ -94,9 +89,6 @@ def build_acados_ocp(
         [vehicle_cfg.delta_rate_max, vehicle_cfg.jerk_max, vehicle_cfg.v_max], dtype=float
     )
 
-    # =========================
-    # STATE BOUNDS
-    # =========================
     ocp.constraints.idxbx = np.array([3, 4, 5], dtype=int)
     ocp.constraints.lbx = np.array(
         [vehicle_cfg.v_min, -vehicle_cfg.delta_max, vehicle_cfg.a_min], dtype=float
@@ -107,9 +99,6 @@ def build_acados_ocp(
 
     ocp.constraints.x0 = np.zeros((NX,), dtype=float)
 
-    # =========================
-    # NONLINEAR CONSTRAINTS
-    # =========================
     ocp.constraints.lh = np.array([-vehicle_cfg.a_lat_max], dtype=float)
     ocp.constraints.uh = np.array([vehicle_cfg.a_lat_max], dtype=float)
     ocp.constraints.lh_e = np.array([-vehicle_cfg.a_lat_max], dtype=float)
@@ -117,9 +106,6 @@ def build_acados_ocp(
 
     ocp.parameter_values = np.zeros((NP,), dtype=float)
 
-    # =========================
-    # SOLVER OPTIONS
-    # =========================
     ocp.solver_options.qp_solver = solver_cfg.qp_solver
     ocp.solver_options.hessian_approx = solver_cfg.hessian_approx
     ocp.solver_options.integrator_type = solver_cfg.integrator_type
@@ -136,7 +122,6 @@ def _build_model(vehicle_cfg: VehicleConfig) -> AcadosModel:
     model = AcadosModel()
     model.name = "circle_track_nmpc"
 
-    # states
     px = ca.SX.sym("px")
     py = ca.SX.sym("py")
     psi = ca.SX.sym("psi")
@@ -146,27 +131,25 @@ def _build_model(vehicle_cfg: VehicleConfig) -> AcadosModel:
     theta = ca.SX.sym("theta")
     x = ca.vertcat(px, py, psi, v, delta, a, theta)
 
-    # controls
     delta_rate = ca.SX.sym("delta_rate")
     jerk = ca.SX.sym("jerk")
     theta_rate = ca.SX.sym("theta_rate")
     u = ca.vertcat(delta_rate, jerk, theta_rate)
 
-    # xdot
     xdot = ca.SX.sym("xdot", NX)
 
-    # parameters
-    # [ref_x, ref_y, ref_yaw, ref_v, ref_s]
+    # parameters:
+    # [ref_x, ref_y, ref_yaw, ref_v, ref_s, ref_kappa]
     p = ca.SX.sym("p", NP)
     ref_x = p[0]
     ref_y = p[1]
     ref_yaw = p[2]
     ref_v = p[3]
     ref_s = p[4]
+    ref_kappa = p[5]
 
     wb = vehicle_cfg.wheel_base
 
-    # dynamics
     f_expl = ca.vertcat(
         v * ca.cos(psi),
         v * ca.sin(psi),
@@ -178,49 +161,40 @@ def _build_model(vehicle_cfg: VehicleConfig) -> AcadosModel:
     )
     f_impl = xdot - f_expl
 
-    # geometric tracking errors
     ec = -ca.sin(ref_yaw) * (px - ref_x) + ca.cos(ref_yaw) * (py - ref_y)
     el =  ca.cos(ref_yaw) * (px - ref_x) + ca.sin(ref_yaw) * (py - ref_y)
     eyaw = ca.atan2(ca.sin(psi - ref_yaw), ca.cos(psi - ref_yaw))
 
-    # -------------------------
-    # stage residual
-    # -------------------------
+    # steering feedforward from reference curvature
+    delta_ff = ca.atan(wb * ref_kappa)
+
     model.cost_y_expr = ca.vertcat(
         ec,
         el,
         eyaw,
         v - ref_v,
         theta - ref_s,
-        a,                    # NEW: penalize acceleration itself
+        a,
+        delta - delta_ff,
         delta_rate,
         jerk,
         theta_rate - ref_v,
     )
 
-    # -------------------------
-    # terminal stop gate
-    # -------------------------
-    # ref_v -> 0 near stop, so stop_gate -> 1
-    # ref_v large in cruise, so stop_gate -> small
     v_stop_scale = 0.5
     stop_gate = 1.0 / (1.0 + (ref_v / v_stop_scale) ** 2)
 
-    # -------------------------
-    # terminal residual
-    # -------------------------
     model.cost_y_expr_e = ca.vertcat(
         px - ref_x,
         py - ref_y,
         eyaw,
         v - ref_v,
         theta - ref_s,
-        a,                            # NEW: terminal acceleration penalty
-        stop_gate * (v - ref_v),      # NEW: explicitly strengthen terminal stop speed near stop
-        stop_gate * (theta - ref_s),  # NEW: explicitly strengthen stop position/progress near stop
+        a,
+        stop_gate * (v - ref_v),
+        stop_gate * (theta - ref_s),
     )
 
-    # lateral acceleration constraint
     alat = v * v / wb * ca.tan(delta)
     model.con_h_expr = ca.vertcat(alat)
     model.con_h_expr_e = ca.vertcat(alat)
@@ -231,5 +205,4 @@ def _build_model(vehicle_cfg: VehicleConfig) -> AcadosModel:
     model.p = p
     model.f_expl_expr = f_expl
     model.f_impl_expr = f_impl
-
     return model

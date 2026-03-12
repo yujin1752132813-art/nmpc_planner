@@ -4,8 +4,15 @@ import argparse
 import json
 from pathlib import Path
 
+import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
+
+_ANIM = None  # keep animation alive
+
+
+def wrap_angle(angle: float) -> float:
+    return np.arctan2(np.sin(angle), np.cos(angle))
 
 
 def load_frames(run_dir: Path):
@@ -23,9 +30,10 @@ def compute_plot_bounds(frames):
     ys = []
 
     for frame in frames:
-        ego = frame["input"]["ego"]
-        xs.append(ego["x"])
-        ys.append(ego["y"])
+        ego_after = frame["output"].get("ego_after", {})
+        if ego_after:
+            xs.append(ego_after["x"])
+            ys.append(ego_after["y"])
 
         refs = frame["input"].get("local_ref", [])
         for r in refs:
@@ -37,26 +45,21 @@ def compute_plot_bounds(frames):
             xs.append(p["x"])
             ys.append(p["y"])
 
-        ego_after = frame["output"].get("ego_after", None)
-        if ego_after:
-            xs.append(ego_after["x"])
-            ys.append(ego_after["y"])
-
     if not xs or not ys:
         return (-10, 10), (-10, 10)
 
     xmin, xmax = min(xs), max(xs)
     ymin, ymax = min(ys), max(ys)
-
     margin_x = max(5.0, 0.05 * (xmax - xmin + 1e-6))
     margin_y = max(5.0, 0.05 * (ymax - ymin + 1e-6))
-
     return (xmin - margin_x, xmax + margin_x), (ymin - margin_y, ymax + margin_y)
 
 
 def main() -> None:
+    global _ANIM
+
     parser = argparse.ArgumentParser()
-    parser.add_argument("--run", required=True, help="Run directory, e.g. results/debug_runs/run_20260311_120000")
+    parser.add_argument("--run", required=True, help="Run directory, e.g. results/debug_runs/run_xxx")
     parser.add_argument("--interval-ms", type=int, default=100)
     args = parser.parse_args()
 
@@ -67,7 +70,7 @@ def main() -> None:
 
     xlim, ylim = compute_plot_bounds(frames)
 
-    fig, ax = plt.subplots(figsize=(9, 7))
+    fig, ax = plt.subplots(figsize=(10, 8))
     ax.set_xlim(*xlim)
     ax.set_ylim(*ylim)
     ax.set_aspect("equal", adjustable="box")
@@ -75,10 +78,15 @@ def main() -> None:
 
     ref_line, = ax.plot([], [], "--", linewidth=1.5, label="local_ref")
     pred_line, = ax.plot([], [], linewidth=2.0, label="predicted_traj")
-    hist_line, = ax.plot([], [], linewidth=1.8, label="executed_traj")
-    ego_pt = ax.scatter([], [], c="r", s=50, label="ego")
+    hist_line, = ax.plot([], [], linewidth=2.0, label="executed_traj")
+    ego_pt = ax.scatter([], [], c="r", s=50, label="ego_after")
 
     title = ax.set_title("")
+    info_text = ax.text(
+        0.02, 0.98, "", transform=ax.transAxes,
+        va="top", ha="left",
+        bbox=dict(boxstyle="round", facecolor="white", alpha=0.75)
+    )
     ax.legend()
 
     hist_x = []
@@ -88,16 +96,15 @@ def main() -> None:
         ref_line.set_data([], [])
         pred_line.set_data([], [])
         hist_line.set_data([], [])
-        ego_pt.set_offsets([[None, None]])
+        ego_pt.set_offsets(np.array([[np.nan, np.nan]]))
         title.set_text("Initializing...")
-        return ref_line, pred_line, hist_line, ego_pt, title
+        info_text.set_text("")
+        return ref_line, pred_line, hist_line, ego_pt, title, info_text
 
     def update(i):
         frame = frames[i]
-
         refs = frame["input"].get("local_ref", [])
         traj = frame["output"]["planner_output"].get("traj", [])
-        ego = frame["input"]["ego"]
         ego_after = frame["output"]["ego_after"]
 
         hist_x.append(ego_after["x"])
@@ -114,22 +121,28 @@ def main() -> None:
             pred_line.set_data([], [])
 
         hist_line.set_data(hist_x, hist_y)
-        ego_pt.set_offsets([[ego["x"], ego["y"]]])
+        ego_pt.set_offsets(np.array([[ego_after["x"], ego_after["y"]]]))
 
         status = frame["output"]["planner_output"].get("status", "unknown")
         solve_time_ms = frame["output"]["planner_output"].get("solve_time_ms", 0.0)
-        events = ", ".join(frame.get("events", [])) or "none"
         pos_err = frame["output"].get("position_error_m", 0.0)
+        yaw_wrapped = wrap_angle(ego_after.get("yaw", 0.0))
+        events = ", ".join(frame.get("events", [])) or "none"
 
-        title.set_text(
-            f"frame={frame['frame_id']} | status={status} | "
-            f"solve={solve_time_ms:.2f} ms | pos_err={pos_err:.3f} m | events={events}"
+        title.set_text(f"frame={frame['frame_id']} status={status} solve={solve_time_ms:.2f} ms")
+        info_text.set_text(
+            f"x={ego_after['x']:.2f}\n"
+            f"y={ego_after['y']:.2f}\n"
+            f"v={ego_after['v']:.2f}\n"
+            f"yaw={yaw_wrapped:.3f}\n"
+            f"theta={ego_after.get('theta', 0.0):.2f}\n"
+            f"pos_err={pos_err:.3f}\n"
+            f"events={events}"
         )
 
-        return ref_line, pred_line, hist_line, ego_pt, title
+        return ref_line, pred_line, hist_line, ego_pt, title, info_text
 
-    # 关键修复：一定要保存到变量，防止动画对象被回收
-    anim = FuncAnimation(
+    _ANIM = FuncAnimation(
         fig,
         update,
         init_func=init,
@@ -139,11 +152,8 @@ def main() -> None:
         repeat=False,
     )
 
-    # 防止部分环境下被提前垃圾回收
-    fig._anim = anim
-
-    plt.tight_layout()
-    plt.show()
+    fig.tight_layout()
+    plt.show(block=True)
 
 
 if __name__ == "__main__":

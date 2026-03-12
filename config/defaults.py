@@ -16,8 +16,8 @@ class VehicleConfig:
 
 @dataclass(frozen=True)
 class SolverConfig:
-    dt: float = 0.1
-    horizon: int = 50
+    dt: float = 0.3
+    horizon: int = 12
     nlp_solver_type: str = "SQP_RTI"
     qp_solver: str = "PARTIAL_CONDENSING_HPIPM"
     hessian_approx: str = "GAUSS_NEWTON"
@@ -32,26 +32,26 @@ class SolverConfig:
 
 @dataclass(frozen=True)
 class CostConfig:
+    # tracking
     w_contour: float = 60.0
-    w_lag: float = 6.0
+    w_lag: float = 4.0
     w_yaw: float = 20.0
-    w_v: float = 5.0
-    w_theta: float = 3.5
+    w_v: float = 4.0
+    w_theta: float = 2.0
 
-    # NEW: penalize acceleration itself, not only jerk
+    # smoothness / comfort
     w_a: float = 2.0
-
+    w_delta_ff: float = 12.0
     w_delta_rate: float = 3.0
     w_jerk: float = 1.0
     w_theta_rate: float = 4.0
     w_du: float = 0.60
 
+    # terminal
     w_terminal_xy: float = 120.0
     w_terminal_yaw: float = 30.0
     w_terminal_v: float = 15.0
     w_terminal_theta: float = 12.0
-
-    # NEW: terminal smooth stop related weights
     w_terminal_a: float = 8.0
     w_terminal_stop_v: float = 50.0
     w_terminal_stop_theta: float = 25.0
@@ -59,9 +59,14 @@ class CostConfig:
 
 @dataclass(frozen=True)
 class SimConfig:
-    max_steps: int = 6000
+    max_steps: int = 340
     stop_tolerance_m: float = 0.5
     stop_speed_mps: float = 0.25
     reference_search_margin: float = 12.0
     path_ds: float = 0.25
     trajectory_width: float = 4.0
+
+    # curvature smoothing for reference path
+    enable_curvature_smoothing: bool = True
+    curvature_smoothing_sigma_m: float = 0.8
+    curvature_smoothing_passes: int = 2
