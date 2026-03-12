@@ -40,6 +40,17 @@ def compute_plot_bounds(frames):
             xs.append(r["x"])
             ys.append(r["y"])
 
+        corridor = frame["input"].get("corridor", {}).get("stations", [])
+        for c in corridor:
+            xs.extend([
+                c["ref_x"] + c["n_x"] * c["l_min"],
+                c["ref_x"] + c["n_x"] * c["l_max"],
+            ])
+            ys.extend([
+                c["ref_y"] + c["n_y"] * c["l_min"],
+                c["ref_y"] + c["n_y"] * c["l_max"],
+            ])
+
         traj = frame["output"]["planner_output"].get("traj", [])
         for p in traj:
             xs.append(p["x"])
@@ -77,6 +88,8 @@ def main() -> None:
     ax.grid(True)
 
     ref_line, = ax.plot([], [], "--", linewidth=1.5, label="local_ref")
+    left_corridor_line, = ax.plot([], [], linewidth=1.0, label="corridor_left")
+    right_corridor_line, = ax.plot([], [], linewidth=1.0, label="corridor_right")
     pred_line, = ax.plot([], [], linewidth=2.0, label="predicted_traj")
     hist_line, = ax.plot([], [], linewidth=2.0, label="executed_traj")
     ego_pt = ax.scatter([], [], c="r", s=50, label="ego_after")
@@ -94,16 +107,19 @@ def main() -> None:
 
     def init():
         ref_line.set_data([], [])
+        left_corridor_line.set_data([], [])
+        right_corridor_line.set_data([], [])
         pred_line.set_data([], [])
         hist_line.set_data([], [])
         ego_pt.set_offsets(np.array([[np.nan, np.nan]]))
         title.set_text("Initializing...")
         info_text.set_text("")
-        return ref_line, pred_line, hist_line, ego_pt, title, info_text
+        return ref_line, left_corridor_line, right_corridor_line, pred_line, hist_line, ego_pt, title, info_text
 
     def update(i):
         frame = frames[i]
         refs = frame["input"].get("local_ref", [])
+        corridor = frame["input"].get("corridor", {}).get("stations", [])
         traj = frame["output"]["planner_output"].get("traj", [])
         ego_after = frame["output"]["ego_after"]
 
@@ -114,6 +130,17 @@ def main() -> None:
             ref_line.set_data([r["x"] for r in refs], [r["y"] for r in refs])
         else:
             ref_line.set_data([], [])
+
+        if corridor:
+            left_x = [c["ref_x"] + c["n_x"] * c["l_max"] for c in corridor]
+            left_y = [c["ref_y"] + c["n_y"] * c["l_max"] for c in corridor]
+            right_x = [c["ref_x"] + c["n_x"] * c["l_min"] for c in corridor]
+            right_y = [c["ref_y"] + c["n_y"] * c["l_min"] for c in corridor]
+            left_corridor_line.set_data(left_x, left_y)
+            right_corridor_line.set_data(right_x, right_y)
+        else:
+            left_corridor_line.set_data([], [])
+            right_corridor_line.set_data([], [])
 
         if traj:
             pred_line.set_data([p["x"] for p in traj], [p["y"] for p in traj])
@@ -140,7 +167,7 @@ def main() -> None:
             f"events={events}"
         )
 
-        return ref_line, pred_line, hist_line, ego_pt, title, info_text
+        return ref_line, left_corridor_line, right_corridor_line, pred_line, hist_line, ego_pt, title, info_text
 
     _ANIM = FuncAnimation(
         fig,

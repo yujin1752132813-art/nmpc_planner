@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import List, Optional
 
 from config.defaults import CostConfig, SimConfig, SolverConfig, VehicleConfig
 from .corridor_builder import CorridorBuilder
@@ -11,12 +12,16 @@ from .reference_manager import ReferenceManager
 from .scenario_builder import ScenarioBuilder
 from .solver_wrapper import SolverWrapper
 from .trajectory_validator import TrajectoryValidator
-from .types import EgoState, PlannerInput, RunLog, SolveStatus
+from .types import CorridorLimiter, EgoState, PlannerInput, RunLog, SolveStatus
 from .utils import unwrap_to_near
 
 
 class PlannerNode:
-    def __init__(self):
+    def __init__(
+        self,
+        corridor_limiters: Optional[List[CorridorLimiter]] = None,
+        run_name: Optional[str] = None,
+    ):
         self.vehicle_cfg = VehicleConfig()
         self.solver_cfg = SolverConfig()
         self.cost_cfg = CostConfig()
@@ -31,8 +36,14 @@ class PlannerNode:
         self.validator = TrajectoryValidator(self.vehicle_cfg, self.solver_cfg)
         self.log = RunLog()
 
+        self.corridor_limiters = list(corridor_limiters or [])
+
         results_root = Path(__file__).resolve().parents[1] / "results"
-        self.recorder = DebugRecorder(results_root / "debug_runs", enable=True)
+        self.recorder = DebugRecorder(
+            results_root / "debug_runs",
+            run_name=run_name,
+            enable=True,
+        )
 
     def _detect_events(self, output, ego_after: EgoState, position_error_m: float):
         events = []
@@ -82,10 +93,18 @@ class PlannerNode:
                 if local_ref:
                     ego_before.yaw = unwrap_to_near(ego_before.yaw, local_ref[0].yaw)
 
-                corridor = self.corridor_builder.build(local_ref)
                 obstacles = self.obstacle_predictor.predict()
 
-                planner_input = PlannerInput(ego=ego_before, local_ref=local_ref)
+                corridor = self.corridor_builder.build(
+                    local_ref,
+                    limiters=self.corridor_limiters,
+                )
+
+                planner_input = PlannerInput(
+                    ego=ego_before,
+                    local_ref=local_ref,
+                    corridor=corridor,
+                )
                 output = self.solver.solve(planner_input)
 
                 if output.status != SolveStatus.OK or not output.traj:
@@ -101,6 +120,7 @@ class PlannerNode:
                 self.log.states.append(ego)
                 self.log.commands.append(cmd)
                 self.log.references.append(local_ref)
+                self.log.corridors.append(corridor)
                 self.log.solve_times_ms.append(output.solve_time_ms)
                 self.log.statuses.append(output.status.value)
                 self.log.solver_status_codes.append(output.solver_status_code)

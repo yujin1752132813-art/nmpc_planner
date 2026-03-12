@@ -88,7 +88,7 @@ class ReferenceManager:
             # advance future reference with the actual reference speed,
             # not with max(ref_v, 1.0). Otherwise low-speed start/stop
             # phases become geometrically inconsistent.
-            ds = max(r.v_ref, 0.05) * self.solver_cfg.dt
+            ds = max(r.v_ref, 1.0) * self.solver_cfg.dt
             s = min(s + ds, self.scenario.total_length)
 
         return refs

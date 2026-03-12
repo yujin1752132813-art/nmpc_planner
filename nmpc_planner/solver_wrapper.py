@@ -7,8 +7,8 @@ from typing import List, Tuple
 import numpy as np
 
 from config.defaults import CostConfig, SolverConfig, VehicleConfig
-from .acados_ocp import NX, NU, build_acados_ocp
-from .types import EgoState, PlannerInput, PlannerOutput, SolveStatus, TrajectoryPoint
+from .acados_ocp import NH, NX, NU, build_acados_ocp
+from .types import EgoState, FeasibleCorridor, PlannerInput, PlannerOutput, SolveStatus, TrajectoryPoint
 from .utils import unwrap_to_near
 
 try:
@@ -51,6 +51,7 @@ class SolverWrapper:
 
         self._set_initial_state(planner_input.ego)
         self._set_stage_params(planner_input.local_ref)
+        self._set_stage_path_constraints(planner_input.corridor)
         self._apply_warm_start()
 
         wall_t0 = time.perf_counter()
@@ -129,6 +130,33 @@ class SolverWrapper:
             ref = refs[k]
             pk = np.array([ref.x, ref.y, ref.yaw, ref.v_ref, ref.s, ref.kappa], dtype=float)
             self.solver.set(k, "p", pk)
+
+    def _set_stage_path_constraints(self, corridor: FeasibleCorridor | None) -> None:
+        wide = 1.0e3
+        default_lh = np.array([-self.vehicle_cfg.a_lat_max, -wide], dtype=float)
+        default_uh = np.array([self.vehicle_cfg.a_lat_max, wide], dtype=float)
+
+        # acados nonlinear constraints h are not active at stage 0 by default.
+        # So we only set bounds for stages 1..N.
+        if corridor is None or not corridor.stations:
+            for k in range(1, self.N + 1):
+                self.solver.constraints_set(k, "lh", default_lh)
+                self.solver.constraints_set(k, "uh", default_uh)
+            return
+
+        if len(corridor.stations) != self.N + 1:
+            raise ValueError(
+                f"corridor length mismatch: got {len(corridor.stations)}, expected {self.N + 1}"
+            )
+
+        # stage 0: do nothing
+        # stage 1..N: apply corridor bounds
+        for k in range(1, self.N + 1):
+            station = corridor.stations[k]
+            lh = np.array([-self.vehicle_cfg.a_lat_max, station.l_min], dtype=float)
+            uh = np.array([self.vehicle_cfg.a_lat_max, station.l_max], dtype=float)
+            self.solver.constraints_set(k, "lh", lh)
+            self.solver.constraints_set(k, "uh", uh)
 
     def _apply_warm_start(self) -> None:
         self._make_yaw_guess_continuous()

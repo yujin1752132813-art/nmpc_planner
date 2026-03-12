@@ -64,6 +64,13 @@ class SimConfig:
     stop_speed_mps: float = 0.25
     reference_search_margin: float = 12.0
     path_ds: float = 0.25
+
+    # road / corridor geometry around the reference centerline
+    road_half_width_m: float = 2.0
+    corridor_safety_margin_m: float = 0.25
+    min_corridor_width_m: float = 1.2
+
+    # legacy plotting width, kept for compatibility with old scripts
     trajectory_width: float = 4.0
 
     # curvature smoothing for reference path

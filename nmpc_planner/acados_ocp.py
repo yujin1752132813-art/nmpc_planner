@@ -29,6 +29,10 @@ NY = 10
 #  stop_gate*(v-ref_v), stop_gate*(theta-ref_s)]
 NY_E = 8
 
+# path constraints:
+# [lateral_accel, contour_error]
+NH = 2
+
 
 def build_acados_ocp(
     vehicle_cfg: VehicleConfig,
@@ -99,10 +103,11 @@ def build_acados_ocp(
 
     ocp.constraints.x0 = np.zeros((NX,), dtype=float)
 
-    ocp.constraints.lh = np.array([-vehicle_cfg.a_lat_max], dtype=float)
-    ocp.constraints.uh = np.array([vehicle_cfg.a_lat_max], dtype=float)
-    ocp.constraints.lh_e = np.array([-vehicle_cfg.a_lat_max], dtype=float)
-    ocp.constraints.uh_e = np.array([vehicle_cfg.a_lat_max], dtype=float)
+    # stage-wise corridor bounds are updated at runtime via solver.constraints_set(k, "lh"/"uh", ...)
+    ocp.constraints.lh = np.array([-vehicle_cfg.a_lat_max, -1.0e3], dtype=float)
+    ocp.constraints.uh = np.array([vehicle_cfg.a_lat_max, 1.0e3], dtype=float)
+    ocp.constraints.lh_e = np.array([-vehicle_cfg.a_lat_max, -1.0e3], dtype=float)
+    ocp.constraints.uh_e = np.array([vehicle_cfg.a_lat_max, 1.0e3], dtype=float)
 
     ocp.parameter_values = np.zeros((NP,), dtype=float)
 
@@ -162,10 +167,9 @@ def _build_model(vehicle_cfg: VehicleConfig) -> AcadosModel:
     f_impl = xdot - f_expl
 
     ec = -ca.sin(ref_yaw) * (px - ref_x) + ca.cos(ref_yaw) * (py - ref_y)
-    el =  ca.cos(ref_yaw) * (px - ref_x) + ca.sin(ref_yaw) * (py - ref_y)
+    el = ca.cos(ref_yaw) * (px - ref_x) + ca.sin(ref_yaw) * (py - ref_y)
     eyaw = ca.atan2(ca.sin(psi - ref_yaw), ca.cos(psi - ref_yaw))
 
-    # steering feedforward from reference curvature
     delta_ff = ca.atan(wb * ref_kappa)
 
     model.cost_y_expr = ca.vertcat(
@@ -196,8 +200,8 @@ def _build_model(vehicle_cfg: VehicleConfig) -> AcadosModel:
     )
 
     alat = v * v / wb * ca.tan(delta)
-    model.con_h_expr = ca.vertcat(alat)
-    model.con_h_expr_e = ca.vertcat(alat)
+    model.con_h_expr = ca.vertcat(alat, ec)
+    model.con_h_expr_e = ca.vertcat(alat, ec)
 
     model.x = x
     model.xdot = xdot
